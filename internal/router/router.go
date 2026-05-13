@@ -150,7 +150,7 @@ func New(dep Dependencies) *gin.Engine {
 				admin.GET("/reports/summary", middleware.RequirePermission(dep.Permissions, "reports:view"), dep.ReportHandler.Summary)
 				admin.GET("/audit-logs", middleware.RequirePermission(dep.Permissions, "audit:view"), dep.AuditHandler.List)
 
-				admin.GET("/users", middleware.RequirePermission(dep.Permissions, "users:manage"), dep.UserHandler.List)
+				admin.GET("/users", middleware.RequirePermission(dep.Permissions, "users:view"), dep.UserHandler.List)
 				admin.PATCH("/users/:id/role", middleware.RequirePermission(dep.Permissions, "users:manage"), dep.UserHandler.UpdateRole)
 			}
 		}

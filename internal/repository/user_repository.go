@@ -52,8 +52,8 @@ func NewUserPostgresRepository(db *pgxpool.Pool) *UserPostgresRepository {
 
 func (r *UserPostgresRepository) Create(ctx context.Context, user *models.User) error {
 	query := `
-		INSERT INTO users (name, email, password_hash, role)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO users (name, email, phone, password_hash, role)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -61,14 +61,14 @@ func (r *UserPostgresRepository) Create(ctx context.Context, user *models.User) 
 		user.Role = models.RoleCustomer
 	}
 
-	err := r.db.QueryRow(ctx, query, user.Name, user.Email, user.PasswordHash, user.Role).
+	err := r.db.QueryRow(ctx, query, user.Name, user.Email, user.Phone, user.PasswordHash, user.Role).
 		Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
 	return mapPostgresError(err)
 }
 
 func (r *UserPostgresRepository) FindByEmail(ctx context.Context, email string) (*models.User, error) {
 	query := `
-		SELECT id, name, email, password_hash, role, email_verified_at,
+		SELECT id, name, email, phone, password_hash, role, email_verified_at,
 		       email_verification_code_hash, email_verification_expires_at,
 		       email_verification_sent_at, email_verification_attempts,
 		       created_at, updated_at
@@ -86,7 +86,7 @@ func (r *UserPostgresRepository) FindByEmail(ctx context.Context, email string) 
 
 func (r *UserPostgresRepository) FindByID(ctx context.Context, id int64) (*models.User, error) {
 	query := `
-		SELECT id, name, email, password_hash, role, email_verified_at,
+		SELECT id, name, email, phone, password_hash, role, email_verified_at,
 		       email_verification_code_hash, email_verification_expires_at,
 		       email_verification_sent_at, email_verification_attempts,
 		       created_at, updated_at
@@ -116,7 +116,7 @@ func (r *UserPostgresRepository) List(ctx context.Context, filter UserListFilter
 	args = append(args, filter.PageSize, (filter.Page-1)*filter.PageSize)
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, name, email, password_hash, role, email_verified_at,
+		SELECT id, name, email, phone, password_hash, role, email_verified_at,
 		       email_verification_code_hash, email_verification_expires_at,
 		       email_verification_sent_at, email_verification_attempts,
 		       created_at, updated_at
@@ -217,13 +217,17 @@ func (r *UserPostgresRepository) MarkEmailVerified(ctx context.Context, userID i
 func (r *UserPostgresRepository) UpdateProfile(ctx context.Context, user *models.User) error {
 	query := `
 		UPDATE users
-		SET name = $1, email = $2, updated_at = NOW()
-		WHERE id = $3
-		RETURNING role, created_at, updated_at
+		SET name = $1, email = $2, phone = $3, updated_at = NOW()
+		WHERE id = $4
+		RETURNING role, email_verified_at, created_at, updated_at
 	`
 
-	err := r.db.QueryRow(ctx, query, user.Name, user.Email, user.ID).
-		Scan(&user.Role, &user.CreatedAt, &user.UpdatedAt)
+	var emailVerifiedAt sql.NullTime
+	err := r.db.QueryRow(ctx, query, user.Name, user.Email, user.Phone, user.ID).
+		Scan(&user.Role, &emailVerifiedAt, &user.CreatedAt, &user.UpdatedAt)
+	if emailVerifiedAt.Valid {
+		user.EmailVerifiedAt = &emailVerifiedAt.Time
+	}
 	return mapPostgresError(err)
 }
 
@@ -249,6 +253,7 @@ func scanUser(row pgx.Row) (*models.User, error) {
 		&user.ID,
 		&user.Name,
 		&user.Email,
+		&user.Phone,
 		&user.PasswordHash,
 		&user.Role,
 		&emailVerifiedAt,
@@ -298,7 +303,7 @@ func buildUserListWhere(filter UserListFilter) (string, []any) {
 	if filter.Search != "" {
 		args = append(args, "%"+filter.Search+"%")
 		placeholder := "$" + strconv.Itoa(len(args))
-		conditions = append(conditions, "(name ILIKE "+placeholder+" OR email ILIKE "+placeholder+")")
+		conditions = append(conditions, "(name ILIKE "+placeholder+" OR email ILIKE "+placeholder+" OR phone ILIKE "+placeholder+")")
 	}
 	if filter.Role != "" {
 		args = append(args, filter.Role)

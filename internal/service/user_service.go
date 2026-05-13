@@ -38,6 +38,7 @@ const (
 type RegisterInput struct {
 	Name     string `json:"name" binding:"required"`
 	Email    string `json:"email" binding:"required,email"`
+	Phone    string `json:"phone"`
 	Password string `json:"password" binding:"required,min=6"`
 }
 
@@ -77,6 +78,7 @@ type UserListInput struct {
 type ProfileInput struct {
 	Name  string `json:"name" binding:"required"`
 	Email string `json:"email" binding:"required,email"`
+	Phone string `json:"phone"`
 }
 
 type AuthResponse struct {
@@ -128,6 +130,10 @@ func NewUserService(
 func (s *UserService) Register(ctx context.Context, input RegisterInput, _ SessionMeta) (*EmailVerificationResponse, error) {
 	email := normalizeEmail(input.Email)
 	name := strings.TrimSpace(input.Name)
+	phone, err := normalizePhone(input.Phone)
+	if err != nil {
+		return nil, err
+	}
 	if name == "" {
 		return nil, apperror.New(400, "name is required")
 	}
@@ -140,6 +146,7 @@ func (s *UserService) Register(ctx context.Context, input RegisterInput, _ Sessi
 	user := &models.User{
 		Name:         name,
 		Email:        email,
+		Phone:        phone,
 		PasswordHash: hash,
 		Role:         models.RoleCustomer,
 	}
@@ -268,10 +275,16 @@ func (s *UserService) FindByID(ctx context.Context, id int64) (*models.User, err
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, id int64, input ProfileInput) (*models.User, error) {
+	phone, err := normalizePhone(input.Phone)
+	if err != nil {
+		return nil, err
+	}
+
 	user := &models.User{
 		ID:    id,
 		Name:  strings.TrimSpace(input.Name),
 		Email: normalizeEmail(input.Email),
+		Phone: phone,
 	}
 
 	if user.Name == "" {
@@ -311,6 +324,29 @@ func (s *UserService) UpdateRole(ctx context.Context, actorID, targetID int64, r
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizePhone(phone string) (string, error) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return "", nil
+	}
+	if len(phone) < 7 || len(phone) > 32 {
+		return "", apperror.New(400, "phone must be between 7 and 32 characters")
+	}
+	for _, char := range phone {
+		if char >= '0' && char <= '9' {
+			continue
+		}
+		switch char {
+		case '+', ' ', '-', '(', ')':
+			continue
+		default:
+			return "", apperror.New(400, "phone contains invalid characters")
+		}
+	}
+
+	return phone, nil
 }
 
 func (s *UserService) createAuthResponse(ctx context.Context, user *models.User, meta SessionMeta) (*AuthResponse, error) {
