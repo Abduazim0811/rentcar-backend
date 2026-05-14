@@ -24,6 +24,8 @@ type Rental struct {
 	TotalAmount float64      `json:"total_amount"`
 	Status      RentalStatus `json:"status"`
 	Payment     *Payment     `json:"payment,omitempty"`
+	User        *User        `json:"user,omitempty"`
+	Car         *Car         `json:"car,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 }

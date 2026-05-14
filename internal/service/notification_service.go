@@ -36,6 +36,10 @@ func (s *NotificationService) List(ctx context.Context, userID int64, unreadOnly
 	return s.notifications.ListByUserID(ctx, userID, unreadOnly)
 }
 
+func (s *NotificationService) CountUnread(ctx context.Context, userID int64) (int64, error) {
+	return s.notifications.CountUnreadByUserID(ctx, userID)
+}
+
 func (s *NotificationService) MarkRead(ctx context.Context, id, userID int64) error {
 	return s.notifications.MarkRead(ctx, id, userID)
 }

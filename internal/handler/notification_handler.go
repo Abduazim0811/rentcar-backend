@@ -32,6 +32,20 @@ func (h *NotificationHandler) List(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *NotificationHandler) CountUnread(c *gin.Context) {
+	userID, ok := c.Get("user_id")
+	if !ok {
+		response.FromError(c, apperror.ErrUnauthorized)
+		return
+	}
+	count, err := h.notifications.CountUnread(c.Request.Context(), userID.(int64))
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"count": count})
+}
+
 func (h *NotificationHandler) MarkRead(c *gin.Context) {
 	userID, ok := c.Get("user_id")
 	if !ok {

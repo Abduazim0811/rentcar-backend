@@ -27,6 +27,7 @@ Use:
 HTTP_PORT=8088
 IMAGE_PUBLIC_URL=https://rent-uz.uz/api/v1/uploads/images
 CORS_ALLOWED_ORIGINS=https://rent-uz.uz,https://www.rent-uz.uz
+TRUSTED_PROXIES=127.0.0.1
 ```
 
 Restart RentCar:

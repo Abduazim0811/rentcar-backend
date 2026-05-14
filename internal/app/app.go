@@ -101,6 +101,10 @@ func Run(logger *slog.Logger) error {
 		logger.Warn("redis_rate_limiter_disabled", slog.String("error", err.Error()))
 	}
 
+	lifecycleCtx, stopLifecycle := context.WithCancel(context.Background())
+	defer stopLifecycle()
+	go runRentalLifecycleWorker(lifecycleCtx, logger, rentalService)
+
 	r := router.New(router.Dependencies{
 		UserHandler:         userHandler,
 		CarHandler:          carHandler,
@@ -117,6 +121,7 @@ func Run(logger *slog.Logger) error {
 		HealthChecker:       db,
 		Logger:              logger,
 		MaxBodyBytes:        cfg.MaxBodyBytes,
+		TrustedProxies:      cfg.TrustedProxies,
 		RateLimit: middleware.RateLimitConfig{
 			MaxRequests: cfg.RateLimitMax,
 			Window:      cfg.RateLimitWindow,
@@ -160,4 +165,40 @@ func ginSetReleaseMode() {
 	// Kept behind a function so app startup remains framework-light outside router wiring.
 	// Gin reads this global before engine creation.
 	gin.SetMode(gin.ReleaseMode)
+}
+
+func runRentalLifecycleWorker(ctx context.Context, logger *slog.Logger, rentals *service.RentalService) {
+	sync := func() {
+		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		result, err := rentals.SyncLifecycle(syncCtx, time.Now())
+		if err != nil {
+			logger.Error("rental_lifecycle_sync_failed", slog.String("error", err.Error()))
+			return
+		}
+		if result.Cancelled > 0 || result.Activated > 0 || result.Completed > 0 || result.FailedPayments > 0 || result.VoidedInvoices > 0 {
+			logger.Info(
+				"rental_lifecycle_synced",
+				slog.Int64("cancelled", result.Cancelled),
+				slog.Int64("activated", result.Activated),
+				slog.Int64("completed", result.Completed),
+				slog.Int64("failed_payments", result.FailedPayments),
+				slog.Int64("voided_invoices", result.VoidedInvoices),
+			)
+		}
+	}
+
+	sync()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sync()
+		}
+	}
 }

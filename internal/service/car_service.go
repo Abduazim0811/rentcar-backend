@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"car-rental-system/internal/models"
@@ -25,13 +26,16 @@ type CarListInput struct {
 }
 
 type CarInput struct {
-	Brand       string           `json:"brand" binding:"required"`
-	Model       string           `json:"model" binding:"required"`
-	Year        int              `json:"year" binding:"required,gte=1900"`
-	PlateNumber string           `json:"plate_number" binding:"required"`
-	DailyRate   float64          `json:"daily_rate" binding:"required,gt=0"`
-	Status      models.CarStatus `json:"status" binding:"omitempty,oneof=available maintenance inactive"`
-	Image       string           `json:"image" binding:"omitempty,url"`
+	Brand        string           `json:"brand" binding:"required"`
+	Model        string           `json:"model" binding:"required"`
+	Year         int              `json:"year" binding:"required,gte=1900"`
+	PlateNumber  string           `json:"plate_number" binding:"required"`
+	DailyRate    float64          `json:"daily_rate" binding:"required,gt=0"`
+	Seats        int              `json:"seats" binding:"omitempty,gte=1,lte=12"`
+	Fuel         string           `json:"fuel" binding:"omitempty,max=32"`
+	Transmission string           `json:"transmission" binding:"omitempty,max=32"`
+	Status       models.CarStatus `json:"status" binding:"omitempty,oneof=available maintenance inactive"`
+	Image        string           `json:"image" binding:"omitempty,url"`
 }
 
 func NewCarService(cars repository.CarRepository) *CarService {
@@ -39,18 +43,25 @@ func NewCarService(cars repository.CarRepository) *CarService {
 }
 
 func (s *CarService) Create(ctx context.Context, input CarInput) (*models.Car, error) {
+	input, err := normalizeCarInput(input)
+	if err != nil {
+		return nil, err
+	}
 	if input.Year > time.Now().Year()+1 {
 		return nil, apperror.New(400, "year cannot be in the far future")
 	}
 
 	car := &models.Car{
-		Brand:       input.Brand,
-		Model:       input.Model,
-		Year:        input.Year,
-		PlateNumber: input.PlateNumber,
-		DailyRate:   input.DailyRate,
-		Status:      input.Status,
-		Image:       input.Image,
+		Brand:        input.Brand,
+		Model:        input.Model,
+		Year:         input.Year,
+		PlateNumber:  input.PlateNumber,
+		DailyRate:    input.DailyRate,
+		Seats:        input.Seats,
+		Fuel:         input.Fuel,
+		Transmission: input.Transmission,
+		Status:       input.Status,
+		Image:        input.Image,
 	}
 
 	if err := s.cars.Create(ctx, car); err != nil {
@@ -61,19 +72,26 @@ func (s *CarService) Create(ctx context.Context, input CarInput) (*models.Car, e
 }
 
 func (s *CarService) Update(ctx context.Context, id int64, input CarInput) (*models.Car, error) {
+	input, err := normalizeCarInput(input)
+	if err != nil {
+		return nil, err
+	}
 	if input.Year > time.Now().Year()+1 {
 		return nil, apperror.New(400, "year cannot be in the far future")
 	}
 
 	car := &models.Car{
-		ID:          id,
-		Brand:       input.Brand,
-		Model:       input.Model,
-		Year:        input.Year,
-		PlateNumber: input.PlateNumber,
-		DailyRate:   input.DailyRate,
-		Status:      input.Status,
-		Image:       input.Image,
+		ID:           id,
+		Brand:        input.Brand,
+		Model:        input.Model,
+		Year:         input.Year,
+		PlateNumber:  input.PlateNumber,
+		DailyRate:    input.DailyRate,
+		Seats:        input.Seats,
+		Fuel:         input.Fuel,
+		Transmission: input.Transmission,
+		Status:       input.Status,
+		Image:        input.Image,
 	}
 
 	if car.Status == "" {
@@ -119,4 +137,28 @@ func (s *CarService) List(ctx context.Context, input CarListInput) (*repository.
 
 func (s *CarService) FindByID(ctx context.Context, id int64) (*models.Car, error) {
 	return s.cars.FindByID(ctx, id)
+}
+
+func normalizeCarInput(input CarInput) (CarInput, error) {
+	input.Brand = strings.TrimSpace(input.Brand)
+	input.Model = strings.TrimSpace(input.Model)
+	input.PlateNumber = strings.ToUpper(strings.TrimSpace(input.PlateNumber))
+	input.Fuel = strings.TrimSpace(input.Fuel)
+	input.Transmission = strings.TrimSpace(input.Transmission)
+	input.Image = strings.TrimSpace(input.Image)
+
+	if input.Seats == 0 {
+		input.Seats = 5
+	}
+	if input.Fuel == "" {
+		input.Fuel = "Petrol"
+	}
+	if input.Transmission == "" {
+		input.Transmission = "Automatic"
+	}
+	if input.Seats < 1 || input.Seats > 12 {
+		return CarInput{}, apperror.New(400, "seats must be between 1 and 12")
+	}
+
+	return input, nil
 }

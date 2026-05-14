@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
+	"os"
+	"time"
 
 	"car-rental-system/internal/models"
 	"car-rental-system/internal/service"
@@ -16,6 +19,8 @@ type UserHandler struct {
 	users *service.UserService
 	audit *service.AuditService
 }
+
+const refreshTokenCookieName = "rent_car_refresh_token"
 
 func NewUserHandler(users *service.UserService, audits ...*service.AuditService) *UserHandler {
 	var auditService *service.AuditService
@@ -54,6 +59,7 @@ func (h *UserHandler) VerifyEmail(c *gin.Context) {
 		return
 	}
 
+	setRefreshTokenCookie(c, result)
 	response.OK(c, result)
 }
 
@@ -82,41 +88,57 @@ func (h *UserHandler) Login(c *gin.Context) {
 
 	result, err := h.users.Login(c.Request.Context(), input, sessionMeta(c))
 	if err != nil {
+		if errors.Is(err, apperror.ErrEmailNotVerified) {
+			response.FromError(c, err)
+			return
+		}
 		response.FromError(c, apperror.ErrInvalidAuth)
 		return
 	}
 
+	setRefreshTokenCookie(c, result)
 	response.OK(c, result)
 }
 
 func (h *UserHandler) Refresh(c *gin.Context) {
-	var input service.RefreshInput
-	if err := c.ShouldBindJSON(&input); err != nil {
+	token, err := refreshTokenFromRequest(c)
+	if err != nil {
+		if errors.Is(err, apperror.ErrUnauthorized) {
+			response.FromError(c, err)
+			return
+		}
 		response.Error(c, http.StatusBadRequest, validator.Message(err))
 		return
 	}
 
-	result, err := h.users.Refresh(c.Request.Context(), input, sessionMeta(c))
+	result, err := h.users.Refresh(c.Request.Context(), service.RefreshInput{RefreshToken: token}, sessionMeta(c))
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
 
+	setRefreshTokenCookie(c, result)
 	response.OK(c, result)
 }
 
 func (h *UserHandler) Logout(c *gin.Context) {
-	var input service.LogoutInput
-	if err := c.ShouldBindJSON(&input); err != nil {
+	token, err := refreshTokenFromRequest(c)
+	if errors.Is(err, apperror.ErrUnauthorized) {
+		clearRefreshTokenCookie(c)
+		response.OK(c, gin.H{"logged_out": true})
+		return
+	}
+	if err != nil {
 		response.Error(c, http.StatusBadRequest, validator.Message(err))
 		return
 	}
 
-	if err := h.users.Logout(c.Request.Context(), input); err != nil {
+	if err := h.users.Logout(c.Request.Context(), service.LogoutInput{RefreshToken: token}); err != nil {
 		response.FromError(c, err)
 		return
 	}
 
+	clearRefreshTokenCookie(c)
 	response.OK(c, gin.H{"logged_out": true})
 }
 
@@ -132,6 +154,7 @@ func (h *UserHandler) LogoutAll(c *gin.Context) {
 		return
 	}
 
+	clearRefreshTokenCookie(c)
 	response.OK(c, gin.H{"logged_out": true})
 }
 
@@ -222,6 +245,61 @@ func sessionMeta(c *gin.Context) service.SessionMeta {
 		UserAgent: c.GetHeader("User-Agent"),
 		IPAddress: c.ClientIP(),
 	}
+}
+
+func refreshTokenFromRequest(c *gin.Context) (string, error) {
+	var input struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&input); err != nil {
+			return "", err
+		}
+	}
+	if input.RefreshToken != "" {
+		return input.RefreshToken, nil
+	}
+
+	token, err := c.Cookie(refreshTokenCookieName)
+	if err == nil && token != "" {
+		return token, nil
+	}
+
+	return "", apperror.ErrUnauthorized
+}
+
+func setRefreshTokenCookie(c *gin.Context, result *service.AuthResponse) {
+	if result == nil || result.RefreshToken == "" {
+		return
+	}
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    result.RefreshToken,
+		Path:     "/api/v1/auth",
+		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
+		HttpOnly: true,
+		Secure:   secureCookie(c),
+		SameSite: http.SameSiteLaxMode,
+	})
+	result.RefreshToken = ""
+}
+
+func clearRefreshTokenCookie(c *gin.Context) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    "",
+		Path:     "/api/v1/auth",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secureCookie(c),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func secureCookie(c *gin.Context) bool {
+	return os.Getenv("APP_ENV") == "production" || c.GetHeader("X-Forwarded-Proto") == "https"
 }
 
 func parseUserListInput(c *gin.Context) (service.UserListInput, error) {

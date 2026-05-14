@@ -47,13 +47,8 @@ func (s *PaymentService) Create(ctx context.Context, userID int64, role models.U
 		Status:   models.PaymentStatusPending,
 	}
 
-	if err := s.payments.Create(ctx, payment); err != nil {
+	if err := s.payments.CreateForRental(ctx, payment, rental.Status); err != nil {
 		return nil, err
-	}
-	if rental.Status == models.RentalStatusApproved {
-		if err := s.rentals.UpdateStatus(ctx, rental.ID, models.RentalStatusPendingPayment); err != nil {
-			return nil, err
-		}
 	}
 
 	return payment, nil

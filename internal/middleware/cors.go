@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 
@@ -17,7 +16,8 @@ var defaultAllowedOrigins = map[string]struct{}{
 }
 
 func CORS() gin.HandlerFunc {
-	configuredOrigins := parseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	includeLocalDefaults := os.Getenv("APP_ENV") != "production"
+	configuredOrigins := parseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"), includeLocalDefaults)
 
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
@@ -47,10 +47,12 @@ func CORS() gin.HandlerFunc {
 	}
 }
 
-func parseAllowedOrigins(value string) map[string]struct{} {
+func parseAllowedOrigins(value string, includeDefaults bool) map[string]struct{} {
 	origins := make(map[string]struct{}, len(defaultAllowedOrigins))
-	for origin := range defaultAllowedOrigins {
-		origins[origin] = struct{}{}
+	if includeDefaults {
+		for origin := range defaultAllowedOrigins {
+			origins[origin] = struct{}{}
+		}
 	}
 
 	for _, origin := range strings.Split(value, ",") {
@@ -71,17 +73,7 @@ func isAllowedOrigin(origin string, configuredOrigins map[string]struct{}) bool 
 		return true
 	}
 
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return false
-	}
-
-	host := parsed.Hostname()
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	return false
 }
 
 func allowedHeaders(c *gin.Context) string {

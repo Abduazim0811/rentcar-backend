@@ -212,6 +212,10 @@ func parseRentalDates(start, end string) (time.Time, time.Time, int, error) {
 	if endDate.Before(startDate) {
 		return time.Time{}, time.Time{}, 0, apperror.ErrInvalidDateSpan
 	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if startDate.Before(today) {
+		return time.Time{}, time.Time{}, 0, apperror.New(400, "start_date cannot be in the past")
+	}
 
 	days := int(endDate.Sub(startDate).Hours()/24) + 1
 	return startDate, endDate, days, nil
@@ -287,6 +291,10 @@ func (s *RentalService) ListByUserID(ctx context.Context, userID int64) ([]model
 	return s.rentals.ListByUserID(ctx, userID)
 }
 
+func (s *RentalService) SyncLifecycle(ctx context.Context, now time.Time) (repository.RentalLifecycleSyncResult, error) {
+	return s.rentals.SyncLifecycle(ctx, now)
+}
+
 func (s *RentalService) FindByID(ctx context.Context, userID int64, role models.UserRole, id int64) (*models.Rental, error) {
 	rental, err := s.rentals.FindByID(ctx, id)
 	if err != nil {
@@ -300,7 +308,86 @@ func (s *RentalService) FindByID(ctx context.Context, userID int64, role models.
 }
 
 func (s *RentalService) UpdateStatus(ctx context.Context, id int64, status models.RentalStatus) error {
+	rental, err := s.rentals.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := validateRentalStatusChange(rental, status); err != nil {
+		return err
+	}
+
 	return s.rentals.UpdateStatus(ctx, id, status)
+}
+
+func validateRentalStatusChange(rental *models.Rental, next models.RentalStatus) error {
+	if next == rental.Status {
+		return nil
+	}
+
+	switch next {
+	case models.RentalStatusRequested:
+		return apperror.New(400, "rental cannot be moved back to requested")
+	case models.RentalStatusApproved:
+		if rental.Status != models.RentalStatusRequested &&
+			rental.Status != models.RentalStatusRejected &&
+			rental.Status != models.RentalStatusCancelled {
+			return apperror.New(400, "only requested, rejected, or cancelled rentals can be approved")
+		}
+		return ensureRentalHasNoOpenPayment(rental, "approving")
+	case models.RentalStatusRejected:
+		if rental.Status != models.RentalStatusRequested && rental.Status != models.RentalStatusApproved {
+			return apperror.New(400, "only requested or approved rentals can be rejected")
+		}
+		return ensureRentalHasNoOpenPayment(rental, "rejecting")
+	case models.RentalStatusCancelled:
+		if rental.Status == models.RentalStatusCompleted {
+			return apperror.New(400, "completed rental cannot be cancelled")
+		}
+		return ensureRentalHasNoOpenPayment(rental, "cancelling")
+	case models.RentalStatusPendingPayment:
+		return apperror.New(400, "create a payment request to mark rental as pending payment")
+	case models.RentalStatusConfirmed:
+		return apperror.New(400, "confirm the payment to confirm rental")
+	case models.RentalStatusActive:
+		if !rentalPaymentPaid(rental) {
+			return apperror.New(400, "payment must be paid before activating rental")
+		}
+		if rental.Status != models.RentalStatusConfirmed {
+			return apperror.New(400, "only confirmed rentals can be activated")
+		}
+		return nil
+	case models.RentalStatusCompleted:
+		if !rentalPaymentPaid(rental) {
+			return apperror.New(400, "payment must be paid before completing rental")
+		}
+		if rental.Status != models.RentalStatusActive {
+			return apperror.New(400, "only active rentals can be completed")
+		}
+		return nil
+	default:
+		return apperror.New(400, "invalid rental status")
+	}
+}
+
+func rentalPaymentPaid(rental *models.Rental) bool {
+	return rental.Payment != nil && rental.Payment.Status == models.PaymentStatusPaid
+}
+
+func ensureRentalHasNoOpenPayment(rental *models.Rental, action string) error {
+	if rental.Payment == nil {
+		return nil
+	}
+
+	switch rental.Payment.Status {
+	case models.PaymentStatusFailed, models.PaymentStatusRefunded:
+		return nil
+	case models.PaymentStatusPending:
+		return apperror.New(400, "fail the pending payment before "+action+" rental")
+	case models.PaymentStatusPaid:
+		return apperror.New(400, "refund the paid payment before "+action+" rental")
+	default:
+		return apperror.New(400, "payment must be resolved before "+action+" rental")
+	}
 }
 
 func (s *RentalService) Approve(ctx context.Context, id int64) (*models.Rental, error) {
@@ -310,6 +397,9 @@ func (s *RentalService) Approve(ctx context.Context, id int64) (*models.Rental, 
 	}
 	if rental.Status != models.RentalStatusRequested {
 		return nil, apperror.New(400, "only requested rentals can be approved")
+	}
+	if err := ensureRentalHasNoOpenPayment(rental, "approving"); err != nil {
+		return nil, err
 	}
 	if err := s.rentals.UpdateStatus(ctx, id, models.RentalStatusApproved); err != nil {
 		return nil, err
@@ -325,6 +415,9 @@ func (s *RentalService) Reject(ctx context.Context, id int64) (*models.Rental, e
 	}
 	if rental.Status != models.RentalStatusRequested && rental.Status != models.RentalStatusApproved {
 		return nil, apperror.New(400, "only requested or approved rentals can be rejected")
+	}
+	if err := ensureRentalHasNoOpenPayment(rental, "rejecting"); err != nil {
+		return nil, err
 	}
 	if err := s.rentals.UpdateStatus(ctx, id, models.RentalStatusRejected); err != nil {
 		return nil, err
@@ -346,6 +439,9 @@ func (s *RentalService) Cancel(ctx context.Context, userID int64, role models.Us
 	}
 	if rental.Status == models.RentalStatusCompleted {
 		return apperror.New(400, "completed rental cannot be cancelled")
+	}
+	if err := ensureRentalHasNoOpenPayment(rental, "cancelling"); err != nil {
+		return err
 	}
 	if rental.Status == models.RentalStatusConfirmed {
 		today := time.Now().UTC().Truncate(24 * time.Hour)

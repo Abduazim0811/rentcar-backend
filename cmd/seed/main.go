@@ -49,6 +49,7 @@ func main() {
 		VALUES ($1, $2, $3, 'super_admin', NOW())
 		ON CONFLICT (email) DO UPDATE
 		SET name = EXCLUDED.name,
+		    password_hash = EXCLUDED.password_hash,
 		    role = 'super_admin',
 		    email_verified_at = COALESCE(users.email_verified_at, NOW()),
 		    updated_at = NOW()

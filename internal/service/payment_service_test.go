@@ -31,6 +31,9 @@ func (r *paymentServicePaymentRepo) Create(_ context.Context, payment *models.Pa
 	payment.ID = copy.ID
 	return nil
 }
+func (r *paymentServicePaymentRepo) CreateForRental(ctx context.Context, payment *models.Payment, _ models.RentalStatus) error {
+	return r.Create(ctx, payment)
+}
 func (r *paymentServicePaymentRepo) FindByID(context.Context, int64) (*models.Payment, error) {
 	return nil, apperror.ErrNotFound
 }
@@ -80,6 +83,9 @@ func (r *paymentServiceRentalRepo) ListAll(context.Context, repository.RentalLis
 }
 func (r *paymentServiceRentalRepo) ListByUserID(context.Context, int64) ([]models.Rental, error) {
 	return nil, nil
+}
+func (r *paymentServiceRentalRepo) SyncLifecycle(context.Context, time.Time) (repository.RentalLifecycleSyncResult, error) {
+	return repository.RentalLifecycleSyncResult{}, nil
 }
 func (r *paymentServiceRentalRepo) UpdateStatus(context.Context, int64, models.RentalStatus) error {
 	return nil

@@ -52,8 +52,8 @@ func NewCarPostgresRepository(db *pgxpool.Pool) *CarPostgresRepository {
 
 func (r *CarPostgresRepository) Create(ctx context.Context, car *models.Car) error {
 	query := `
-		INSERT INTO cars (brand, model, year, plate_number, daily_rate, status, image_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO cars (brand, model, year, plate_number, daily_rate, seats, fuel, transmission, status, image_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -61,7 +61,7 @@ func (r *CarPostgresRepository) Create(ctx context.Context, car *models.Car) err
 		car.Status = models.CarStatusAvailable
 	}
 
-	err := r.db.QueryRow(ctx, query, car.Brand, car.Model, car.Year, car.PlateNumber, car.DailyRate, car.Status, car.Image).
+	err := r.db.QueryRow(ctx, query, car.Brand, car.Model, car.Year, car.PlateNumber, car.DailyRate, car.Seats, car.Fuel, car.Transmission, car.Status, car.Image).
 		Scan(&car.ID, &car.CreatedAt, &car.UpdatedAt)
 	return mapPostgresError(err)
 }
@@ -69,12 +69,12 @@ func (r *CarPostgresRepository) Create(ctx context.Context, car *models.Car) err
 func (r *CarPostgresRepository) Update(ctx context.Context, car *models.Car) error {
 	query := `
 		UPDATE cars
-		SET brand = $1, model = $2, year = $3, plate_number = $4, daily_rate = $5, status = $6, image_url = $7, updated_at = NOW()
-		WHERE id = $8
+		SET brand = $1, model = $2, year = $3, plate_number = $4, daily_rate = $5, seats = $6, fuel = $7, transmission = $8, status = $9, image_url = $10, updated_at = NOW()
+		WHERE id = $11
 		RETURNING created_at, updated_at
 	`
 
-	err := r.db.QueryRow(ctx, query, car.Brand, car.Model, car.Year, car.PlateNumber, car.DailyRate, car.Status, car.Image, car.ID).
+	err := r.db.QueryRow(ctx, query, car.Brand, car.Model, car.Year, car.PlateNumber, car.DailyRate, car.Seats, car.Fuel, car.Transmission, car.Status, car.Image, car.ID).
 		Scan(&car.CreatedAt, &car.UpdatedAt)
 	return mapPostgresError(err)
 }
@@ -93,7 +93,7 @@ func (r *CarPostgresRepository) Delete(ctx context.Context, id int64) error {
 
 func (r *CarPostgresRepository) FindByID(ctx context.Context, id int64) (*models.Car, error) {
 	query := `
-		SELECT id, brand, model, year, plate_number, daily_rate, status, COALESCE(image_url, ''), created_at, updated_at
+		SELECT id, brand, model, year, plate_number, daily_rate, seats, fuel, transmission, status, COALESCE(image_url, ''), created_at, updated_at
 		FROM cars
 		WHERE id = $1
 	`
@@ -121,7 +121,7 @@ func (r *CarPostgresRepository) List(ctx context.Context, filter CarListFilter) 
 	args = append(args, filter.PageSize, (filter.Page-1)*filter.PageSize)
 
 	query := `
-		SELECT id, brand, model, year, plate_number, daily_rate, status, COALESCE(image_url, ''), created_at, updated_at
+		SELECT id, brand, model, year, plate_number, daily_rate, seats, fuel, transmission, status, COALESCE(image_url, ''), created_at, updated_at
 		FROM cars
 	` + where + `
 		ORDER BY id DESC
@@ -245,6 +245,9 @@ func scanCar(row pgx.Row) (*models.Car, error) {
 		&car.Year,
 		&car.PlateNumber,
 		&car.DailyRate,
+		&car.Seats,
+		&car.Fuel,
+		&car.Transmission,
 		&car.Status,
 		&car.Image,
 		&car.CreatedAt,

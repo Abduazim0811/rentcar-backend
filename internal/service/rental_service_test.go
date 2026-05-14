@@ -34,10 +34,13 @@ func (r *rentalServiceCarRepo) IsAvailable(context.Context, int64, time.Time, ti
 }
 
 type rentalServiceRentalRepo struct {
-	rental       *models.Rental
-	created      *models.Rental
-	cancelledID  int64
-	cancelCalled bool
+	rental        *models.Rental
+	created       *models.Rental
+	cancelledID   int64
+	cancelCalled  bool
+	updatedID     int64
+	updatedStatus models.RentalStatus
+	updateCalled  bool
 }
 
 func (r *rentalServiceRentalRepo) CreateWithAvailability(_ context.Context, rental *models.Rental) error {
@@ -65,7 +68,13 @@ func (r *rentalServiceRentalRepo) ListAll(context.Context, repository.RentalList
 func (r *rentalServiceRentalRepo) ListByUserID(context.Context, int64) ([]models.Rental, error) {
 	return nil, nil
 }
-func (r *rentalServiceRentalRepo) UpdateStatus(context.Context, int64, models.RentalStatus) error {
+func (r *rentalServiceRentalRepo) SyncLifecycle(context.Context, time.Time) (repository.RentalLifecycleSyncResult, error) {
+	return repository.RentalLifecycleSyncResult{}, nil
+}
+func (r *rentalServiceRentalRepo) UpdateStatus(_ context.Context, id int64, status models.RentalStatus) error {
+	r.updateCalled = true
+	r.updatedID = id
+	r.updatedStatus = status
 	return nil
 }
 func (r *rentalServiceRentalRepo) Cancel(_ context.Context, id int64) error {
@@ -81,11 +90,13 @@ func TestRentalCreatePreventsDoubleBooking(t *testing.T) {
 	}
 	rentalRepo := &rentalServiceRentalRepo{}
 	service := NewRentalService(rentalRepo, carRepo)
+	start := time.Now().UTC().AddDate(0, 0, 1).Format(time.DateOnly)
+	end := time.Now().UTC().AddDate(0, 0, 3).Format(time.DateOnly)
 
 	_, err := service.Create(context.Background(), 7, RentalInput{
 		CarID:     10,
-		StartDate: "2026-05-10",
-		EndDate:   "2026-05-12",
+		StartDate: start,
+		EndDate:   end,
 	})
 
 	if !errors.Is(err, apperror.ErrDoubleBooking) {
@@ -103,11 +114,13 @@ func TestRentalCreateCalculatesTotalAndCreatesPendingRental(t *testing.T) {
 	}
 	rentalRepo := &rentalServiceRentalRepo{}
 	service := NewRentalService(rentalRepo, carRepo)
+	start := time.Now().UTC().AddDate(0, 0, 1).Format(time.DateOnly)
+	end := time.Now().UTC().AddDate(0, 0, 3).Format(time.DateOnly)
 
 	rental, err := service.Create(context.Background(), 7, RentalInput{
 		CarID:     10,
-		StartDate: "2026-05-10",
-		EndDate:   "2026-05-12",
+		StartDate: start,
+		EndDate:   end,
 	})
 	if err != nil {
 		t.Fatalf("create rental: %v", err)
@@ -121,6 +134,119 @@ func TestRentalCreateCalculatesTotalAndCreatesPendingRental(t *testing.T) {
 	}
 	if rental.Status != models.RentalStatusRequested {
 		t.Fatalf("expected requested status, got %s", rental.Status)
+	}
+}
+
+func TestRentalCreateRejectsPastStartDate(t *testing.T) {
+	carRepo := &rentalServiceCarRepo{
+		car:       &models.Car{ID: 10, Status: models.CarStatusAvailable, DailyRate: 40},
+		available: true,
+	}
+	rentalRepo := &rentalServiceRentalRepo{}
+	service := NewRentalService(rentalRepo, carRepo)
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format(time.DateOnly)
+
+	_, err := service.Create(context.Background(), 7, RentalInput{
+		CarID:     10,
+		StartDate: yesterday,
+		EndDate:   tomorrow,
+	})
+
+	if err == nil {
+		t.Fatal("expected past date error")
+	}
+	if rentalRepo.created != nil {
+		t.Fatal("rental should not be created for a past start date")
+	}
+}
+
+func TestRentalUpdateStatusBlocksActiveWithoutPaidPayment(t *testing.T) {
+	rentalRepo := &rentalServiceRentalRepo{rental: &models.Rental{
+		ID:     44,
+		UserID: 7,
+		Status: models.RentalStatusConfirmed,
+	}}
+	service := NewRentalService(rentalRepo, &rentalServiceCarRepo{})
+
+	err := service.UpdateStatus(context.Background(), 44, models.RentalStatusActive)
+	if err == nil {
+		t.Fatal("expected payment policy error")
+	}
+	if rentalRepo.updateCalled {
+		t.Fatal("repository update should not be called")
+	}
+}
+
+func TestRentalUpdateStatusRequiresPaymentRequestForPendingPayment(t *testing.T) {
+	rentalRepo := &rentalServiceRentalRepo{rental: &models.Rental{
+		ID:     44,
+		UserID: 7,
+		Status: models.RentalStatusApproved,
+	}}
+	service := NewRentalService(rentalRepo, &rentalServiceCarRepo{})
+
+	err := service.UpdateStatus(context.Background(), 44, models.RentalStatusPendingPayment)
+	if err == nil {
+		t.Fatal("expected missing payment request error")
+	}
+	if rentalRepo.updateCalled {
+		t.Fatal("repository update should not be called")
+	}
+}
+
+func TestRentalUpdateStatusBlocksPaidCancellationWithoutRefund(t *testing.T) {
+	rentalRepo := &rentalServiceRentalRepo{rental: &models.Rental{
+		ID:     44,
+		UserID: 7,
+		Status: models.RentalStatusConfirmed,
+		Payment: &models.Payment{
+			Status: models.PaymentStatusPaid,
+		},
+	}}
+	service := NewRentalService(rentalRepo, &rentalServiceCarRepo{})
+
+	err := service.UpdateStatus(context.Background(), 44, models.RentalStatusCancelled)
+	if err == nil {
+		t.Fatal("expected refund policy error")
+	}
+	if rentalRepo.updateCalled {
+		t.Fatal("repository update should not be called")
+	}
+}
+
+func TestRentalUpdateStatusAllowsActiveWithPaidPayment(t *testing.T) {
+	rentalRepo := &rentalServiceRentalRepo{rental: &models.Rental{
+		ID:     44,
+		UserID: 7,
+		Status: models.RentalStatusConfirmed,
+		Payment: &models.Payment{
+			Status: models.PaymentStatusPaid,
+		},
+	}}
+	service := NewRentalService(rentalRepo, &rentalServiceCarRepo{})
+
+	if err := service.UpdateStatus(context.Background(), 44, models.RentalStatusActive); err != nil {
+		t.Fatalf("activate paid confirmed rental: %v", err)
+	}
+	if !rentalRepo.updateCalled || rentalRepo.updatedID != 44 || rentalRepo.updatedStatus != models.RentalStatusActive {
+		t.Fatalf("expected rental 44 to be activated, got id=%d status=%s", rentalRepo.updatedID, rentalRepo.updatedStatus)
+	}
+}
+
+func TestRentalUpdateStatusBlocksInvalidActiveRentalResetToApproved(t *testing.T) {
+	rentalRepo := &rentalServiceRentalRepo{rental: &models.Rental{
+		ID:     44,
+		UserID: 7,
+		Status: models.RentalStatusActive,
+	}}
+	service := NewRentalService(rentalRepo, &rentalServiceCarRepo{})
+
+	if err := service.UpdateStatus(context.Background(), 44, models.RentalStatusApproved); err == nil {
+		t.Fatal("expected invalid transition error")
+	}
+	if rentalRepo.updateCalled {
+		t.Fatal("repository update should not be called")
 	}
 }
 

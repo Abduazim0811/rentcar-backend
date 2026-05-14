@@ -49,6 +49,7 @@ Production must set a strong `JWT_SECRET` with at least 32 characters. Important
 - `RATE_LIMIT_MAX_REQUESTS`
 - `RATE_LIMIT_WINDOW`
 - `CORS_ALLOWED_ORIGINS`
+- `TRUSTED_PROXIES` (set to reverse proxy CIDRs/IPs when using HTTPS proxy headers)
 - `MINIO_ENDPOINT`
 - `IMAGE_PUBLIC_URL`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`

@@ -30,6 +30,7 @@ type Dependencies struct {
 	Logger              *slog.Logger
 	MaxBodyBytes        int64
 	RateLimit           middleware.RateLimitConfig
+	TrustedProxies      []string
 }
 
 type HealthChecker interface {
@@ -38,7 +39,13 @@ type HealthChecker interface {
 
 func New(dep Dependencies) *gin.Engine {
 	r := gin.New()
-	_ = r.SetTrustedProxies(nil)
+	if len(dep.TrustedProxies) > 0 {
+		if err := r.SetTrustedProxies(dep.TrustedProxies); err != nil && dep.Logger != nil {
+			dep.Logger.Warn("trusted_proxies_invalid", slog.String("error", err.Error()))
+		}
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
 	r.Use(middleware.RequestID())
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.CORS())
@@ -107,6 +114,7 @@ func New(dep Dependencies) *gin.Engine {
 			notifications := protected.Group("/notifications")
 			{
 				notifications.GET("", dep.NotificationHandler.List)
+				notifications.GET("/unread-count", dep.NotificationHandler.CountUnread)
 				notifications.POST("/:id/read", dep.NotificationHandler.MarkRead)
 			}
 

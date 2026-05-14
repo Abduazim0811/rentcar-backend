@@ -21,6 +21,7 @@ type RentalRepository interface {
 	ListCalendarRanges(ctx context.Context, carID int64, start, end time.Time) ([]AvailabilityRange, error)
 	ListAll(ctx context.Context, filter RentalListFilter) (*RentalListResult, error)
 	ListByUserID(ctx context.Context, userID int64) ([]models.Rental, error)
+	SyncLifecycle(ctx context.Context, today time.Time) (RentalLifecycleSyncResult, error)
 	UpdateStatus(ctx context.Context, id int64, status models.RentalStatus) error
 	Cancel(ctx context.Context, id int64) error
 }
@@ -49,6 +50,14 @@ type AvailabilityRange struct {
 	Status    string    `json:"status"`
 	StartDate time.Time `json:"start_date"`
 	EndDate   time.Time `json:"end_date"`
+}
+
+type RentalLifecycleSyncResult struct {
+	Cancelled      int64
+	Activated      int64
+	Completed      int64
+	FailedPayments int64
+	VoidedInvoices int64
 }
 
 type RentalPostgresRepository struct {
@@ -244,8 +253,89 @@ func (r *RentalPostgresRepository) ListByUserID(ctx context.Context, userID int6
 	return rentals, mapPostgresError(rows.Err())
 }
 
+func (r *RentalPostgresRepository) SyncLifecycle(ctx context.Context, today time.Time) (RentalLifecycleSyncResult, error) {
+	today = today.UTC().Truncate(24 * time.Hour)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return RentalLifecycleSyncResult{}, mapPostgresError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var result RentalLifecycleSyncResult
+	err = tx.QueryRow(ctx, `
+		WITH expired_unpaid AS (
+			SELECT id
+			FROM rentals
+			WHERE status IN ('requested', 'approved', 'pending_payment')
+			  AND end_date < $1
+			FOR UPDATE
+		),
+		failed_payments AS (
+			UPDATE payments
+			SET status = 'failed', updated_at = NOW()
+			WHERE rental_id IN (SELECT id FROM expired_unpaid)
+			  AND status = 'pending'
+			RETURNING id
+		),
+		voided_invoices AS (
+			UPDATE invoices
+			SET status = 'void', updated_at = NOW()
+			WHERE rental_id IN (SELECT id FROM expired_unpaid)
+			  AND status = 'issued'
+			RETURNING id
+		),
+		cancelled AS (
+			UPDATE rentals
+			SET status = 'cancelled', updated_at = NOW()
+			WHERE id IN (SELECT id FROM expired_unpaid)
+			RETURNING id
+		),
+		activated AS (
+			UPDATE rentals
+			SET status = 'active', updated_at = NOW()
+			WHERE status = 'confirmed'
+			  AND start_date <= $1
+			  AND end_date >= $1
+			RETURNING id
+		),
+		completed AS (
+			UPDATE rentals
+			SET status = 'completed', updated_at = NOW()
+			WHERE status IN ('confirmed', 'active')
+			  AND end_date < $1
+			RETURNING id
+		)
+		SELECT
+			(SELECT COUNT(*) FROM cancelled),
+			(SELECT COUNT(*) FROM activated),
+			(SELECT COUNT(*) FROM completed),
+			(SELECT COUNT(*) FROM failed_payments),
+			(SELECT COUNT(*) FROM voided_invoices)
+	`, today).Scan(
+		&result.Cancelled,
+		&result.Activated,
+		&result.Completed,
+		&result.FailedPayments,
+		&result.VoidedInvoices,
+	)
+	if err != nil {
+		return RentalLifecycleSyncResult{}, mapPostgresError(err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return RentalLifecycleSyncResult{}, mapPostgresError(err)
+	}
+	return result, nil
+}
+
 func (r *RentalPostgresRepository) UpdateStatus(ctx context.Context, id int64, status models.RentalStatus) error {
-	result, err := r.db.Exec(ctx, `UPDATE rentals SET status = $1, updated_at = NOW() WHERE id = $2`, status, id)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	result, err := tx.Exec(ctx, `UPDATE rentals SET status = $1, updated_at = NOW() WHERE id = $2`, status, id)
 	if err != nil {
 		return mapPostgresError(err)
 	}
@@ -253,11 +343,28 @@ func (r *RentalPostgresRepository) UpdateStatus(ctx context.Context, id int64, s
 		return apperror.ErrNotFound
 	}
 
-	return nil
+	if status == models.RentalStatusCancelled || status == models.RentalStatusRejected {
+		if _, err = tx.Exec(ctx, `
+			UPDATE invoices
+			SET status = $1, updated_at = NOW()
+			WHERE rental_id = $2
+			  AND status = 'issued'
+		`, models.InvoiceStatusVoid, id); err != nil {
+			return mapPostgresError(err)
+		}
+	}
+
+	return mapPostgresError(tx.Commit(ctx))
 }
 
 func (r *RentalPostgresRepository) Cancel(ctx context.Context, id int64) error {
-	result, err := r.db.Exec(ctx, `UPDATE rentals SET status = $1, updated_at = NOW() WHERE id = $2`, models.RentalStatusCancelled, id)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	result, err := tx.Exec(ctx, `UPDATE rentals SET status = $1, updated_at = NOW() WHERE id = $2`, models.RentalStatusCancelled, id)
 	if err != nil {
 		return mapPostgresError(err)
 	}
@@ -265,19 +372,34 @@ func (r *RentalPostgresRepository) Cancel(ctx context.Context, id int64) error {
 		return apperror.ErrNotFound
 	}
 
-	return nil
+	if _, err = tx.Exec(ctx, `
+		UPDATE invoices
+		SET status = $1, updated_at = NOW()
+		WHERE rental_id = $2
+		  AND status = 'issued'
+	`, models.InvoiceStatusVoid, id); err != nil {
+		return mapPostgresError(err)
+	}
+
+	return mapPostgresError(tx.Commit(ctx))
 }
 
 const rentalWithPaymentSelect = `
 	SELECT
 		r.id, r.user_id, r.car_id, r.start_date, r.end_date, r.total_amount, r.status, r.created_at, r.updated_at,
-		p.id, p.rental_id, p.amount, p.method, p.status, p.paid_at, p.created_at, p.updated_at
+		p.id, p.rental_id, p.amount, p.method, p.status, p.paid_at, p.created_at, p.updated_at,
+		u.id, u.name, u.email, u.phone, u.role, u.email_verified_at, u.created_at, u.updated_at,
+		c.id, c.brand, c.model, c.year, c.plate_number, c.daily_rate, c.seats, c.fuel, c.transmission, c.status, COALESCE(c.image_url, ''), c.created_at, c.updated_at
 	FROM rentals r
+	JOIN users u ON u.id = r.user_id
+	JOIN cars c ON c.id = r.car_id
 	LEFT JOIN payments p ON p.rental_id = r.id
 `
 
 func scanRental(row pgx.Row) (*models.Rental, error) {
 	var rental models.Rental
+	var user models.User
+	var car models.Car
 	var paymentID sql.NullInt64
 	var paymentRentalID sql.NullInt64
 	var paymentAmount sql.NullFloat64
@@ -286,6 +408,7 @@ func scanRental(row pgx.Row) (*models.Rental, error) {
 	var paymentPaidAt sql.NullTime
 	var paymentCreatedAt sql.NullTime
 	var paymentUpdatedAt sql.NullTime
+	var userEmailVerifiedAt sql.NullTime
 
 	if err := row.Scan(
 		&rental.ID,
@@ -305,9 +428,36 @@ func scanRental(row pgx.Row) (*models.Rental, error) {
 		&paymentPaidAt,
 		&paymentCreatedAt,
 		&paymentUpdatedAt,
+		&user.ID,
+		&user.Name,
+		&user.Email,
+		&user.Phone,
+		&user.Role,
+		&userEmailVerifiedAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&car.ID,
+		&car.Brand,
+		&car.Model,
+		&car.Year,
+		&car.PlateNumber,
+		&car.DailyRate,
+		&car.Seats,
+		&car.Fuel,
+		&car.Transmission,
+		&car.Status,
+		&car.Image,
+		&car.CreatedAt,
+		&car.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
+
+	if userEmailVerifiedAt.Valid {
+		user.EmailVerifiedAt = &userEmailVerifiedAt.Time
+	}
+	rental.User = &user
+	rental.Car = &car
 
 	if paymentID.Valid {
 		var paidAt *time.Time

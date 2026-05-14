@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -26,6 +27,7 @@ type Config struct {
 	MaxBodyBytes    int64
 	RateLimitMax    int
 	RateLimitWindow time.Duration
+	TrustedProxies  []string
 	MinIOEndpoint   string
 	MinIOAccessKey  string
 	MinIOSecretKey  string
@@ -62,6 +64,7 @@ func Load() Config {
 		MaxBodyBytes:    int64(getInt("HTTP_MAX_BODY_BYTES", 10<<20)),
 		RateLimitMax:    getInt("RATE_LIMIT_MAX_REQUESTS", 120),
 		RateLimitWindow: getDuration("RATE_LIMIT_WINDOW", time.Minute),
+		TrustedProxies:  getCSV("TRUSTED_PROXIES"),
 		MinIOEndpoint:   getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinIOAccessKey:  getEnv("MINIO_ACCESS_KEY", "minioadmin"),
 		MinIOSecretKey:  getEnv("MINIO_SECRET_KEY", "minioadmin"),
@@ -150,4 +153,22 @@ func getBool(key string, fallback bool) bool {
 	}
 
 	return parsed
+}
+
+func getCSV(key string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+
+	items := strings.Split(value, ",")
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+
+	return result
 }

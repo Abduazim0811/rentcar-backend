@@ -14,6 +14,7 @@ import (
 type NotificationRepository interface {
 	Create(ctx context.Context, notification *models.Notification) error
 	ListByUserID(ctx context.Context, userID int64, unreadOnly bool) ([]models.Notification, error)
+	CountUnreadByUserID(ctx context.Context, userID int64) (int64, error)
 	MarkRead(ctx context.Context, id, userID int64) error
 }
 
@@ -63,6 +64,17 @@ func (r *NotificationPostgresRepository) ListByUserID(ctx context.Context, userI
 		items = append(items, *item)
 	}
 	return items, mapPostgresError(rows.Err())
+}
+
+func (r *NotificationPostgresRepository) CountUnreadByUserID(ctx context.Context, userID int64) (int64, error) {
+	var count int64
+	err := r.db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM notifications
+		WHERE (user_id = $1 OR user_id IS NULL)
+		  AND read_at IS NULL
+	`, userID).Scan(&count)
+	return count, mapPostgresError(err)
 }
 
 func (r *NotificationPostgresRepository) MarkRead(ctx context.Context, id, userID int64) error {
