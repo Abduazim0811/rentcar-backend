@@ -86,7 +86,7 @@ func Run(logger *slog.Logger) error {
 
 	userHandler := handler.NewUserHandler(userService, auditService)
 	carHandler := handler.NewCarHandler(carService, auditService)
-	rentalHandler := handler.NewRentalHandler(rentalService, notificationService, auditService)
+	rentalHandler := handler.NewRentalHandler(rentalService, notificationService, emailSender, auditService)
 	paymentHandler := handler.NewPaymentHandler(paymentService, invoiceService, auditService)
 	uploadHandler := handler.NewUploadHandler(imageStorage)
 	invoiceHandler := handler.NewInvoiceHandler(invoiceService)

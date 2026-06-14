@@ -60,10 +60,18 @@ func (s *MaintenanceService) Create(ctx context.Context, actorID int64, input Ma
 	if err := s.maintenance.Create(ctx, item); err != nil {
 		return nil, err
 	}
+	if err := s.syncCarMaintenanceStatus(ctx, item.CarID); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
 
 func (s *MaintenanceService) Update(ctx context.Context, id int64, input MaintenanceInput) (*models.CarMaintenance, error) {
+	current, err := s.maintenance.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
 	startDate, endDate, _, err := parseRentalDates(input.StartDate, input.EndDate)
 	if err != nil {
 		return nil, err
@@ -82,11 +90,30 @@ func (s *MaintenanceService) Update(ctx context.Context, id int64, input Mainten
 	if err := s.maintenance.Update(ctx, item); err != nil {
 		return nil, err
 	}
+	if current.CarID != item.CarID {
+		if err := s.syncCarMaintenanceStatus(ctx, current.CarID); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.syncCarMaintenanceStatus(ctx, item.CarID); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
 
 func (s *MaintenanceService) Delete(ctx context.Context, id int64) error {
-	return s.maintenance.Delete(ctx, id)
+	item, err := s.maintenance.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.maintenance.Delete(ctx, id); err != nil {
+		return err
+	}
+	return s.syncCarMaintenanceStatus(ctx, item.CarID)
+}
+
+func (s *MaintenanceService) FindByID(ctx context.Context, id int64) (*models.CarMaintenance, error) {
+	return s.maintenance.FindByID(ctx, id)
 }
 
 func (s *MaintenanceService) List(ctx context.Context, input MaintenanceListInput) (*repository.MaintenanceListResult, error) {
@@ -101,4 +128,48 @@ func validMaintenanceStatus(status models.MaintenanceStatus) bool {
 		status == models.MaintenanceStatusInProgress ||
 		status == models.MaintenanceStatusCompleted ||
 		status == models.MaintenanceStatusCancelled
+}
+
+func (s *MaintenanceService) syncCarMaintenanceStatus(ctx context.Context, carID int64) error {
+	car, err := s.cars.FindByID(ctx, carID)
+	if err != nil {
+		return err
+	}
+
+	hasActiveMaintenance, err := s.hasActiveMaintenance(ctx, carID)
+	if err != nil {
+		return err
+	}
+
+	if hasActiveMaintenance {
+		if car.Status == models.CarStatusMaintenance {
+			return nil
+		}
+		car.Status = models.CarStatusMaintenance
+		return s.cars.Update(ctx, car)
+	}
+
+	if car.Status != models.CarStatusMaintenance {
+		return nil
+	}
+	car.Status = models.CarStatusAvailable
+	return s.cars.Update(ctx, car)
+}
+
+func (s *MaintenanceService) hasActiveMaintenance(ctx context.Context, carID int64) (bool, error) {
+	for _, status := range []models.MaintenanceStatus{models.MaintenanceStatusScheduled, models.MaintenanceStatusInProgress} {
+		result, err := s.maintenance.List(ctx, repository.MaintenanceListFilter{
+			CarID:    carID,
+			Status:   status,
+			Page:     1,
+			PageSize: 1,
+		})
+		if err != nil {
+			return false, err
+		}
+		if result.Total > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }

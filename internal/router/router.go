@@ -137,6 +137,8 @@ func New(dep Dependencies) *gin.Engine {
 			{
 				admin.POST("/uploads/images", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.UploadHandler.UploadImage)
 
+				admin.GET("/cars", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.CarHandler.ListAdmin)
+				admin.GET("/cars/:id", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.CarHandler.GetAdminByID)
 				admin.POST("/cars", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.CarHandler.Create)
 				admin.PUT("/cars/:id", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.CarHandler.Update)
 				admin.DELETE("/cars/:id", middleware.RequirePermission(dep.Permissions, "cars:manage"), dep.CarHandler.Delete)

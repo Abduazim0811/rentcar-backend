@@ -39,7 +39,7 @@ func (h *CarHandler) Create(c *gin.Context) {
 		return
 	}
 
-	audit(c, h.audit, "car.created", "car", car.ID, "{}")
+	audit(c, h.audit, "car.created", "car", car.ID, auditMetadata(nil, car))
 	response.Created(c, car)
 }
 
@@ -47,6 +47,12 @@ func (h *CarHandler) Update(c *gin.Context) {
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		response.FromError(c, apperror.ErrInvalidID)
+		return
+	}
+
+	before, err := h.cars.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
 		return
 	}
 
@@ -62,7 +68,7 @@ func (h *CarHandler) Update(c *gin.Context) {
 		return
 	}
 
-	audit(c, h.audit, "car.updated", "car", car.ID, "{}")
+	audit(c, h.audit, "car.updated", "car", car.ID, auditMetadata(before, car))
 	response.OK(c, car)
 }
 
@@ -73,16 +79,39 @@ func (h *CarHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	before, err := h.cars.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	if err := h.cars.Delete(c.Request.Context(), id); err != nil {
 		response.FromError(c, err)
 		return
 	}
 
-	audit(c, h.audit, "car.deleted", "car", id, "{}")
+	audit(c, h.audit, "car.deleted", "car", id, auditMetadata(before, nil))
 	response.OK(c, gin.H{"deleted": true})
 }
 
 func (h *CarHandler) List(c *gin.Context) {
+	input, err := parseCarListInput(c)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	input.Status = models.CarStatusAvailable
+
+	cars, err := h.cars.List(c.Request.Context(), input)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
+	response.OK(c, cars)
+}
+
+func (h *CarHandler) ListAdmin(c *gin.Context) {
 	input, err := parseCarListInput(c)
 	if err != nil {
 		response.FromError(c, err)
@@ -99,19 +128,41 @@ func (h *CarHandler) List(c *gin.Context) {
 }
 
 func (h *CarHandler) GetByID(c *gin.Context) {
+	car, ok := h.findCarByID(c)
+	if !ok {
+		return
+	}
+	if car.Status != models.CarStatusAvailable {
+		response.FromError(c, apperror.ErrNotFound)
+		return
+	}
+
+	response.OK(c, car)
+}
+
+func (h *CarHandler) GetAdminByID(c *gin.Context) {
+	car, ok := h.findCarByID(c)
+	if !ok {
+		return
+	}
+
+	response.OK(c, car)
+}
+
+func (h *CarHandler) findCarByID(c *gin.Context) (*models.Car, bool) {
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		response.FromError(c, apperror.ErrInvalidID)
-		return
+		return nil, false
 	}
 
 	car, err := h.cars.FindByID(c.Request.Context(), id)
 	if err != nil {
 		response.FromError(c, err)
-		return
+		return nil, false
 	}
 
-	response.OK(c, car)
+	return car, true
 }
 
 func parseID(value string) (int64, error) {
@@ -151,6 +202,7 @@ func parseCarListInput(c *gin.Context) (service.CarListInput, error) {
 		MaxYear:      maxYear,
 		MinDailyRate: minRate,
 		MaxDailyRate: maxRate,
+		AvailableOn:  c.Query("available_on"),
 		Page:         page,
 		PageSize:     pageSize,
 	}, nil

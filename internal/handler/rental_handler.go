@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"car-rental-system/internal/models"
@@ -15,6 +16,7 @@ import (
 type RentalHandler struct {
 	rentals       *service.RentalService
 	notifications *service.NotificationService
+	emails        service.EmailSender
 	audit         *service.AuditService
 }
 
@@ -24,6 +26,8 @@ func NewRentalHandler(rentals *service.RentalService, extras ...any) *RentalHand
 		switch value := extra.(type) {
 		case *service.NotificationService:
 			h.notifications = value
+		case service.EmailSender:
+			h.emails = value
 		case *service.AuditService:
 			h.audit = value
 		}
@@ -170,12 +174,26 @@ func (h *RentalHandler) UpdateStatus(c *gin.Context) {
 		return
 	}
 
+	rental, err := h.rentals.FindByID(c.Request.Context(), 0, models.RoleSuperAdmin, id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	before := *rental
+	previousStatus := rental.Status
+
 	if err := h.rentals.UpdateStatus(c.Request.Context(), id, input.Status); err != nil {
 		response.FromError(c, err)
 		return
 	}
+	if previousStatus != input.Status && shouldNotifyRentalStatus(input.Status) {
+		rental.Status = input.Status
+		h.notifyRentalStatus(c.Request.Context(), rental)
+	}
 
-	audit(c, h.audit, "rental.status_updated", "rental", id, statusMetadata(input.Status))
+	after := before
+	after.Status = input.Status
+	audit(c, h.audit, "rental.status_updated", "rental", id, auditMetadata(&before, &after))
 	response.OK(c, gin.H{"updated": true})
 }
 
@@ -186,15 +204,19 @@ func (h *RentalHandler) Approve(c *gin.Context) {
 		return
 	}
 
+	before, err := h.rentals.FindByID(c.Request.Context(), 0, models.RoleSuperAdmin, id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	rental, err := h.rentals.Approve(c.Request.Context(), id)
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	if h.notifications != nil {
-		_ = h.notifications.Create(c.Request.Context(), service.NotificationInput{UserID: &rental.UserID, Title: "Rental approved", Message: "Your booking was approved. You can create a payment request now.", Type: models.NotificationTypeSuccess})
-	}
-	audit(c, h.audit, "rental.approved", "rental", id, "{}")
+	h.notifyRentalStatus(c.Request.Context(), rental)
+	audit(c, h.audit, "rental.approved", "rental", id, auditMetadata(before, rental))
 	response.OK(c, rental)
 }
 
@@ -205,15 +227,19 @@ func (h *RentalHandler) Reject(c *gin.Context) {
 		return
 	}
 
+	before, err := h.rentals.FindByID(c.Request.Context(), 0, models.RoleSuperAdmin, id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	rental, err := h.rentals.Reject(c.Request.Context(), id)
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	if h.notifications != nil {
-		_ = h.notifications.Create(c.Request.Context(), service.NotificationInput{UserID: &rental.UserID, Title: "Rental rejected", Message: "Your booking request was rejected by admin.", Type: models.NotificationTypeWarning})
-	}
-	audit(c, h.audit, "rental.rejected", "rental", id, "{}")
+	h.notifyRentalStatus(c.Request.Context(), rental)
+	audit(c, h.audit, "rental.rejected", "rental", id, auditMetadata(before, rental))
 	response.OK(c, rental)
 }
 
@@ -230,13 +256,73 @@ func (h *RentalHandler) Cancel(c *gin.Context) {
 		return
 	}
 
-	if err := h.rentals.Cancel(c.Request.Context(), userID.(int64), roleFromContext(c), id); err != nil {
+	role := roleFromContext(c)
+	before, err := h.rentals.FindByID(c.Request.Context(), 0, models.RoleSuperAdmin, id)
+	if err != nil {
 		response.FromError(c, err)
 		return
 	}
 
-	audit(c, h.audit, "rental.cancelled", "rental", id, "{}")
+	if err := h.rentals.Cancel(c.Request.Context(), userID.(int64), role, id); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	var after *models.Rental
+	if role == models.RoleAdmin || role == models.RoleSuperAdmin {
+		if rental, err := h.rentals.FindByID(c.Request.Context(), 0, models.RoleSuperAdmin, id); err == nil {
+			after = rental
+			h.notifyRentalStatus(c.Request.Context(), rental)
+		}
+	}
+	if after == nil {
+		copy := *before
+		copy.Status = models.RentalStatusCancelled
+		after = &copy
+	}
+
+	audit(c, h.audit, "rental.cancelled", "rental", id, auditMetadata(before, after))
 	response.OK(c, gin.H{"cancelled": true})
+}
+
+func (h *RentalHandler) notifyRentalStatus(ctx context.Context, rental *models.Rental) {
+	if rental == nil {
+		return
+	}
+
+	title, message, notificationType, ok := rentalStatusNotification(rental.Status)
+	if !ok {
+		return
+	}
+
+	if h.notifications != nil {
+		_ = h.notifications.Create(ctx, service.NotificationInput{
+			UserID:  &rental.UserID,
+			Title:   title,
+			Message: message,
+			Type:    notificationType,
+		})
+	}
+	if h.emails != nil && rental.User != nil && rental.User.Email != "" {
+		_ = h.emails.SendRentalStatusUpdate(ctx, rental.User.Email, rental.User.Name, rental)
+	}
+}
+
+func shouldNotifyRentalStatus(status models.RentalStatus) bool {
+	_, _, _, ok := rentalStatusNotification(status)
+	return ok
+}
+
+func rentalStatusNotification(status models.RentalStatus) (string, string, models.NotificationType, bool) {
+	switch status {
+	case models.RentalStatusApproved:
+		return "Rental approved", "Your booking was approved. You can create a payment request now.", models.NotificationTypeSuccess, true
+	case models.RentalStatusRejected:
+		return "Rental rejected", "Your booking request was rejected by admin.", models.NotificationTypeWarning, true
+	case models.RentalStatusCancelled:
+		return "Rental cancelled", "Your booking was cancelled by admin.", models.NotificationTypeWarning, true
+	default:
+		return "", "", "", false
+	}
 }
 
 func roleFromContext(c *gin.Context) models.UserRole {

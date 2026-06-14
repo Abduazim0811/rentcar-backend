@@ -55,7 +55,7 @@ func (r *AuditPostgresRepository) List(ctx context.Context, filter AuditListFilt
 	where, args := buildAuditWhere(filter)
 
 	var total int64
-	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs al`+where, args...).Scan(&total); err != nil {
 		return nil, mapPostgresError(err)
 	}
 
@@ -64,10 +64,12 @@ func (r *AuditPostgresRepository) List(ctx context.Context, filter AuditListFilt
 	args = append(args, filter.PageSize, (filter.Page-1)*filter.PageSize)
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, actor_id, action, entity_type, entity_id, metadata::text, ip_address, user_agent, created_at
-		FROM audit_logs
+		SELECT al.id, al.actor_id, al.action, al.entity_type, al.entity_id, al.metadata::text, al.ip_address, al.user_agent, al.created_at,
+		       u.id, u.name, u.email, u.role
+		FROM audit_logs al
+		LEFT JOIN users u ON u.id = al.actor_id
 	`+where+`
-		ORDER BY created_at DESC, id DESC
+		ORDER BY al.created_at DESC, al.id DESC
 		LIMIT $`+strconv.Itoa(limitArg)+` OFFSET $`+strconv.Itoa(offsetArg), args...)
 	if err != nil {
 		return nil, mapPostgresError(err)
@@ -112,11 +114,11 @@ func buildAuditWhere(filter AuditListFilter) (string, []any) {
 	conditions := make([]string, 0)
 	if filter.ActorID > 0 {
 		args = append(args, filter.ActorID)
-		conditions = append(conditions, "actor_id = $"+strconv.Itoa(len(args)))
+		conditions = append(conditions, "al.actor_id = $"+strconv.Itoa(len(args)))
 	}
 	if filter.EntityType != "" {
 		args = append(args, filter.EntityType)
-		conditions = append(conditions, "entity_type = $"+strconv.Itoa(len(args)))
+		conditions = append(conditions, "al.entity_type = $"+strconv.Itoa(len(args)))
 	}
 	if len(conditions) == 0 {
 		return "", args
@@ -128,7 +130,25 @@ func scanAuditLog(row pgx.Row) (*models.AuditLog, error) {
 	var item models.AuditLog
 	var actorID sql.NullInt64
 	var entityID sql.NullInt64
-	if err := row.Scan(&item.ID, &actorID, &item.Action, &item.EntityType, &entityID, &item.Metadata, &item.IPAddress, &item.UserAgent, &item.CreatedAt); err != nil {
+	var actorUserID sql.NullInt64
+	var actorName sql.NullString
+	var actorEmail sql.NullString
+	var actorRole sql.NullString
+	if err := row.Scan(
+		&item.ID,
+		&actorID,
+		&item.Action,
+		&item.EntityType,
+		&entityID,
+		&item.Metadata,
+		&item.IPAddress,
+		&item.UserAgent,
+		&item.CreatedAt,
+		&actorUserID,
+		&actorName,
+		&actorEmail,
+		&actorRole,
+	); err != nil {
 		return nil, err
 	}
 	if actorID.Valid {
@@ -136,6 +156,14 @@ func scanAuditLog(row pgx.Row) (*models.AuditLog, error) {
 	}
 	if entityID.Valid {
 		item.EntityID = &entityID.Int64
+	}
+	if actorUserID.Valid {
+		item.Actor = &models.AuditActor{
+			ID:    actorUserID.Int64,
+			Name:  actorName.String,
+			Email: actorEmail.String,
+			Role:  models.UserRole(actorRole.String),
+		}
 	}
 	return &item, nil
 }

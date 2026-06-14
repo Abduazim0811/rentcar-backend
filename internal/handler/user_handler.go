@@ -231,12 +231,20 @@ func (h *UserHandler) UpdateRole(c *gin.Context) {
 		return
 	}
 
+	before, err := h.users.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	if err := h.users.UpdateRole(c.Request.Context(), actorID.(int64), id, input.Role); err != nil {
 		response.FromError(c, err)
 		return
 	}
 
-	audit(c, h.audit, "user.role_updated", "user", id, statusMetadata(input.Role))
+	after := *before
+	after.Role = input.Role
+	audit(c, h.audit, "user.role_updated", "user", id, auditMetadata(before, &after))
 	response.OK(c, gin.H{"updated": true})
 }
 

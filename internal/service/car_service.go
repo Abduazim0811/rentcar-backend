@@ -21,6 +21,7 @@ type CarListInput struct {
 	MaxYear      int
 	MinDailyRate float64
 	MaxDailyRate float64
+	AvailableOn  string
 	Page         int
 	PageSize     int
 }
@@ -122,6 +123,10 @@ func (s *CarService) List(ctx context.Context, input CarListInput) (*repository.
 	if input.MinDailyRate > 0 && input.MaxDailyRate > 0 && input.MinDailyRate > input.MaxDailyRate {
 		return nil, apperror.New(400, "min_rate cannot be greater than max_rate")
 	}
+	availableOn, err := parseOptionalDate(input.AvailableOn)
+	if err != nil {
+		return nil, apperror.New(400, "invalid available_on")
+	}
 
 	return s.cars.List(ctx, repository.CarListFilter{
 		Search:       input.Search,
@@ -130,6 +135,7 @@ func (s *CarService) List(ctx context.Context, input CarListInput) (*repository.
 		MaxYear:      input.MaxYear,
 		MinDailyRate: input.MinDailyRate,
 		MaxDailyRate: input.MaxDailyRate,
+		AvailableOn:  availableOn,
 		Page:         input.Page,
 		PageSize:     input.PageSize,
 	})

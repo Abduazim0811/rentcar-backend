@@ -38,7 +38,7 @@ func (h *MaintenanceHandler) Create(c *gin.Context) {
 		return
 	}
 
-	audit(c, h.audit, "maintenance.created", "maintenance", item.ID, "{}")
+	audit(c, h.audit, "maintenance.created", "maintenance", item.ID, auditMetadata(nil, item))
 	response.Created(c, item)
 }
 
@@ -46,6 +46,12 @@ func (h *MaintenanceHandler) Update(c *gin.Context) {
 	id, err := parseID(c.Param("id"))
 	if err != nil {
 		response.FromError(c, apperror.ErrInvalidID)
+		return
+	}
+
+	before, err := h.maintenance.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
 		return
 	}
 
@@ -61,7 +67,7 @@ func (h *MaintenanceHandler) Update(c *gin.Context) {
 		return
 	}
 
-	audit(c, h.audit, "maintenance.updated", "maintenance", id, statusMetadata(item.Status))
+	audit(c, h.audit, "maintenance.updated", "maintenance", id, auditMetadata(before, item))
 	response.OK(c, item)
 }
 
@@ -71,11 +77,16 @@ func (h *MaintenanceHandler) Delete(c *gin.Context) {
 		response.FromError(c, apperror.ErrInvalidID)
 		return
 	}
+	before, err := h.maintenance.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
 	if err := h.maintenance.Delete(c.Request.Context(), id); err != nil {
 		response.FromError(c, err)
 		return
 	}
-	audit(c, h.audit, "maintenance.deleted", "maintenance", id, "{}")
+	audit(c, h.audit, "maintenance.deleted", "maintenance", id, auditMetadata(before, nil))
 	response.OK(c, gin.H{"deleted": true})
 }
 

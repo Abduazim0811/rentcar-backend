@@ -30,6 +30,7 @@ type CarListFilter struct {
 	MaxYear      int
 	MinDailyRate float64
 	MaxDailyRate float64
+	AvailableOn  time.Time
 	Page         int
 	PageSize     int
 }
@@ -227,6 +228,26 @@ func buildCarListWhere(filter CarListFilter) (string, []any) {
 	if filter.MaxDailyRate > 0 {
 		args = append(args, filter.MaxDailyRate)
 		conditions = append(conditions, "daily_rate <= $"+strconv.Itoa(len(args)))
+	}
+	if !filter.AvailableOn.IsZero() {
+		args = append(args, filter.AvailableOn)
+		placeholder := "$" + strconv.Itoa(len(args))
+		conditions = append(conditions, `NOT EXISTS (
+			SELECT 1
+			FROM rentals
+			WHERE rentals.car_id = cars.id
+			  AND rentals.status IN ('requested', 'approved', 'pending_payment', 'confirmed', 'active')
+			  AND rentals.start_date <= `+placeholder+`
+			  AND rentals.end_date >= `+placeholder+`
+		)`)
+		conditions = append(conditions, `NOT EXISTS (
+			SELECT 1
+			FROM car_maintenances
+			WHERE car_maintenances.car_id = cars.id
+			  AND car_maintenances.status IN ('scheduled', 'in_progress')
+			  AND car_maintenances.start_date <= `+placeholder+`
+			  AND car_maintenances.end_date >= `+placeholder+`
+		)`)
 	}
 
 	if len(conditions) == 0 {

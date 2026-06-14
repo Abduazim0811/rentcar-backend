@@ -63,7 +63,7 @@ func (r *UserPostgresRepository) Create(ctx context.Context, user *models.User) 
 
 	err := r.db.QueryRow(ctx, query, user.Name, user.Email, user.Phone, user.PasswordHash, user.Role).
 		Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
-	return mapPostgresError(err)
+	return mapUserUniqueError(err)
 }
 
 func (r *UserPostgresRepository) FindByEmail(ctx context.Context, email string) (*models.User, error) {
@@ -228,7 +228,7 @@ func (r *UserPostgresRepository) UpdateProfile(ctx context.Context, user *models
 	if emailVerifiedAt.Valid {
 		user.EmailVerifiedAt = &emailVerifiedAt.Time
 	}
-	return mapPostgresError(err)
+	return mapUserUniqueError(err)
 }
 
 func (r *UserPostgresRepository) UpdateRole(ctx context.Context, id int64, role models.UserRole) error {
@@ -315,4 +315,15 @@ func buildUserListWhere(filter UserListFilter) (string, []any) {
 	}
 
 	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+func mapUserUniqueError(err error) error {
+	if isPostgresConstraint(err, "23505", "users_email_key") {
+		return apperror.New(409, "email is already registered")
+	}
+	if isPostgresConstraint(err, "23505", "idx_users_phone_unique") {
+		return apperror.New(409, "phone is already registered")
+	}
+
+	return mapPostgresError(err)
 }

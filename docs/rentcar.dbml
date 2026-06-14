@@ -64,7 +64,7 @@ Table users {
   id bigint [pk, increment]
   name varchar(120) [not null]
   email varchar(255) [not null, unique]
-  phone varchar(32) [not null, default: ""]
+  phone varchar(32) [not null, default: "", note: "Unique when not empty"]
   password_hash text [not null]
   role user_role [not null, default: "customer"]
   email_verified_at timestamptz
@@ -77,7 +77,7 @@ Table users {
 
   indexes {
     email [name: "idx_users_email"]
-    phone [name: "idx_users_phone"]
+    phone [name: "idx_users_phone_unique", unique]
     email_verification_expires_at [name: "idx_users_email_verification_expires_at"]
   }
 }

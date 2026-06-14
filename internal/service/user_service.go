@@ -152,9 +152,6 @@ func (s *UserService) Register(ctx context.Context, input RegisterInput, _ Sessi
 	}
 
 	if err := s.users.Create(ctx, user); err != nil {
-		if apperror.StatusCode(err) == 409 {
-			return nil, apperror.New(409, "email is already registered")
-		}
 		return nil, err
 	}
 

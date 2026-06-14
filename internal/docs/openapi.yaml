@@ -111,6 +111,12 @@ paths:
         - name: max_rate
           in: query
           schema: { type: number }
+        - name: available_on
+          in: query
+          description: Returns only cars that are not booked or blocked for this date.
+          schema:
+            type: string
+            format: date
       responses:
         '200':
           description: Cars

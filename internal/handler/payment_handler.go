@@ -54,7 +54,7 @@ func (h *PaymentHandler) Create(c *gin.Context) {
 		return
 	}
 
-	audit(c, h.audit, "payment.created", "payment", payment.ID, "{}")
+	audit(c, h.audit, "payment.created", "payment", payment.ID, auditMetadata(nil, payment))
 	response.Created(c, payment)
 }
 
@@ -79,7 +79,13 @@ func (h *PaymentHandler) Confirm(c *gin.Context) {
 		_ = h.invoices.MarkPaid(c.Request.Context(), payment.RentalID)
 	}
 
-	audit(c, h.audit, "payment.confirmed", "payment", id, "{}")
+	after, err := h.payments.FindByID(c.Request.Context(), id)
+	if err != nil {
+		copy := *payment
+		copy.Status = models.PaymentStatusPaid
+		after = &copy
+	}
+	audit(c, h.audit, "payment.confirmed", "payment", id, auditMetadata(payment, after))
 	response.OK(c, gin.H{"paid": true})
 }
 
@@ -90,12 +96,24 @@ func (h *PaymentHandler) Fail(c *gin.Context) {
 		return
 	}
 
+	payment, err := h.payments.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	if err := h.payments.Fail(c.Request.Context(), id); err != nil {
 		response.FromError(c, err)
 		return
 	}
 
-	audit(c, h.audit, "payment.failed", "payment", id, "{}")
+	after, err := h.payments.FindByID(c.Request.Context(), id)
+	if err != nil {
+		copy := *payment
+		copy.Status = models.PaymentStatusFailed
+		after = &copy
+	}
+	audit(c, h.audit, "payment.failed", "payment", id, auditMetadata(payment, after))
 	response.OK(c, gin.H{"failed": true})
 }
 
@@ -106,11 +124,23 @@ func (h *PaymentHandler) Refund(c *gin.Context) {
 		return
 	}
 
+	payment, err := h.payments.FindByID(c.Request.Context(), id)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+
 	if err := h.payments.Refund(c.Request.Context(), id); err != nil {
 		response.FromError(c, err)
 		return
 	}
 
-	audit(c, h.audit, "payment.refunded", "payment", id, "{}")
+	after, err := h.payments.FindByID(c.Request.Context(), id)
+	if err != nil {
+		copy := *payment
+		copy.Status = models.PaymentStatusRefunded
+		after = &copy
+	}
+	audit(c, h.audit, "payment.refunded", "payment", id, auditMetadata(payment, after))
 	response.OK(c, gin.H{"refunded": true})
 }
